@@ -211,7 +211,7 @@ for dat_type in dat_manager.getAllDataTypes():
                 enum.write("\n    " + dat_type.names[i] + " = " + str(dat_type.values[i]) + ";")
 
                 if dat_type.getComment(dat_type.names[i]):
-                    enum.write(dat_type.getComment(dat_type.names[i]))
+                    enum.write(" // " + dat_type.getComment(dat_type.names[i]))
             except IndexError:
                 enum.write("\n    // Couldn't index into array with value " + str(i))
 
