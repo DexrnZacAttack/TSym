@@ -6,6 +6,7 @@
 
 #region imports
 import math
+import os
 
 import ghidra
 from ghidra.program.model.address import AddressSet
@@ -29,9 +30,29 @@ tsym_comments_ver = 1
 tsym_labels_ver = 1
 #endregion
 
+def deldir(dpath):
+    for filename in os.listdir(dpath):
+        fpath = os.path.join(dpath, filename)
+
+        if os.path.isdir(fpath):
+            deldir(fpath)
+        elif os.path.isfile(fpath):
+            os.remove(fpath)
+
+    os.rmdir(dpath)
+
 #region globals
 folder = askDirectory("Select a folder to place symbols in", "Select")
 path = Paths.get(folder.getAbsolutePath())
+
+if os.path.exists(str(path.resolve("structs"))):
+    deldir(str(path.resolve("structs")))
+
+if os.path.exists(str(path.resolve("enums"))):
+    deldir(str(path.resolve("enums")))
+
+if os.path.exists(str(path.resolve("typedefs"))):
+    deldir(str(path.resolve("typedefs")))
 
 symbols = open(str(path.resolve("symbols.txt")), "w")
 comments = open(str(path.resolve("comments.txt")), "w")
