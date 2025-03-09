@@ -15,16 +15,18 @@ try:
 except:
     pass
 from ghidra.program.model.listing import FunctionManager, CodeUnit
-from ghidra.program.model.data import ParameterDefinition
+from ghidra.program.model.data import ParameterDefinition, DefaultDataType
 from ghidra.program.database.function import FunctionManagerDB
-from ghidra.program.database.data import StructureDB, TypedefDB
+from ghidra.program.database.data import StructureDB, TypedefDB, PointerDB
+from ghidra.program.model.data import BuiltInDataType, PointerDataType
 from ghidra.program.model.symbol import Symbol, SymbolType
 from ghidra.util import Msg
 from java.nio.file import Path, Paths, Files
+from java.lang import String
 #endregion
 
 #region constants
-tsym_ver = "1.0.0"
+tsym_ver = "1.1.0"
 tsym_symbols_ver = 1
 tsym_comments_ver = 1
 tsym_labels_ver = 1
@@ -45,21 +47,15 @@ def deldir(dpath):
 folder = askDirectory("Select a folder to place symbols in", "Select")
 path = Paths.get(folder.getAbsolutePath())
 
-if os.path.exists(str(path.resolve("structs"))):
-    deldir(str(path.resolve("structs")))
-
-if os.path.exists(str(path.resolve("enums"))):
-    deldir(str(path.resolve("enums")))
-
-if os.path.exists(str(path.resolve("typedefs"))):
-    deldir(str(path.resolve("typedefs")))
+if os.path.exists(str(path.resolve("types"))):
+    deldir(str(path.resolve("types")))
 
 symbols = open(str(path.resolve("symbols.txt")), "w")
 comments = open(str(path.resolve("comments.txt")), "w")
 labels = open(str(path.resolve("labels.txt")), "w")
 symbols.write("# TSym-Symbols " + str(tsym_symbols_ver) + " | TSym " + tsym_ver + "\n")
 comments.write("# TSym-Comments " + str(tsym_comments_ver) + " | TSym " + tsym_ver + "\n")
-comments.write("# TSym-Labels " + str(tsym_labels_ver) + " | TSym " + tsym_ver + "\n")
+labels.write("# TSym-Labels " + str(tsym_labels_ver) + " | TSym " + tsym_ver + "\n")
 
 # its very FUN
 fun_manager = currentProgram.getFunctionManager()
@@ -160,22 +156,54 @@ for func in fun_manager.getFunctions(False):  # type: ghidra.program.model.listi
 
 #region types writer (struct, typedef, enum)
 # types
-print("Writing types (struct, typedef, enum)")
+print("Writing types (struct, typedef, enum, union)")
 # these go into their own .h file
 for dat_type in dat_manager.getAllDataTypes():
     path_name = url_encode(dat_type.getPathName().replace("::", "/"))
     parent_path = path_name.rpartition('/')[0].lstrip("/")
-    if isinstance(dat_type, ghidra.program.database.data.StructureDB):
+    if isinstance(dat_type, ghidra.program.database.data.StructureDB) or isinstance(dat_type, ghidra.program.database.data.UnionDB):
+        inherits = []
+
+        t_name = "struct"
+        if isinstance(dat_type, ghidra.program.database.data.UnionDB):
+            t_name = "union"
+
         i = 0
-        type_path = path.resolve("structs").resolve(parent_path)
+        imports = []
+        type_path = path.resolve("types").resolve(parent_path)
         Files.createDirectories(type_path)
 
-        struct = open(str(type_path.resolve(path_name.rpartition('/')[-1].lstrip("/") + ".h")), "w")
+        struct = open(str(type_path.resolve(path_name.rpartition('/')[-1].lstrip("/") + ".h")), "w+")
+
+        for component in dat_type.getComponents():  # type: ghidra.program.model.data.DataTypeComponent
+            try:
+                if (component.getFieldName() == "inherit" or component.comment == "inherit") and t_name == "struct":
+                    inherits.append(os.path.basename(component.getDataType().getPathName().lstrip("/")))
+
+                # this assumes the user has an import path set at root dir (types)
+                dtype = component.getDataType()
+                while isinstance(dtype, PointerDB):
+                    dtype = dtype.getDataType()
+
+                imp_path = dtype.getPathName().lstrip("/").replace("*", "").strip()
+
+                if not imports.__contains__(url_encode(imp_path) + ".h") and not isinstance(dtype, BuiltInDataType) and not isinstance(dtype, DefaultDataType):
+                    imports.append(url_encode(imp_path) + ".h")
+            except Exception as e:
+                struct.write("// " + str(e) + "\n")
+
+        for imp in imports:
+            struct.write("#include " + "\"" + imp + "\"" + "\n")
 
         # type: ghidra.program.database.data.StructureDB
         # print("struct " + dat_type.getPathName())
         # struct.write("#pragma pack(push, 1)")
-        struct.write("\nstruct " + dat_type.getDisplayName() + " {")
+        inherit = ""
+        if inherits:
+            inherit += " : "
+            inherit += ', '.join(inherits)
+
+        struct.write(t_name + " " + dat_type.getDisplayName() + inherit + " {")
 
         for component in dat_type.getComponents():  # type: ghidra.program.model.data.DataTypeComponent
             try:
@@ -184,7 +212,10 @@ for dat_type in dat_manager.getAllDataTypes():
                 if component.getFieldName():
                     st_name = component.getFieldName()
 
-                struct.write("\n    " + component.getDataType().getPathName().lstrip("/") + " " + st_name + ";")
+                if (st_name == "inherit" or component.comment == "inherit") and t_name == "struct":
+                    continue
+
+                struct.write("\n    " + os.path.basename(component.getDataType().getPathName().lstrip("/")) + " " + st_name + ";")
 
                 if component.comment:
                     struct.write(" // " + component.comment)
@@ -199,17 +230,35 @@ for dat_type in dat_manager.getAllDataTypes():
         struct.close()
 
     elif isinstance(dat_type, ghidra.program.database.data.TypedefDB):
-        type_path = path.resolve("typedefs").resolve(parent_path)
+        type_path = path.resolve("types").resolve(parent_path)
         Files.createDirectories(type_path)
 
         typedef = open(str(type_path.resolve(path_name.rpartition('/')[-1].lstrip("/") + ".h")), "w")
+
+        imports = []
+
+        # this assumes the user has an import path set at root dir (types)
+        try:
+            dtype = dat_type.getBaseDataType()
+            while isinstance(dtype, PointerDB):
+                dtype = dtype.getDataType()
+
+            imp_path = dtype.getPathName().lstrip("/").replace("*", "").strip()
+
+            if not imports.__contains__(url_encode(imp_path) + ".h") and not isinstance(dtype, BuiltInDataType) and not isinstance(dtype, DefaultDataType):
+                imports.append(url_encode(imp_path) + ".h")
+        except Exception as e:
+            typedef.write("// " + str(e) + "\n")
+
+        for imp in imports:
+            typedef.write("#include " + "\"" + imp + "\"" + "\n")
 
         # type: ghidra.program.database.data.TypedefDB
         # print("Typedef " + dat_type.getPathName())
         # we use the ghidra path so it can be easily read back
         # when reading from blank slate all other types should have been created before this is ran.
         typedef.write(
-            "typedef " + dat_type.getBaseDataType().getPathName().lstrip("/") + " " + dat_type.getDisplayName() + ";")
+            "typedef " + os.path.basename(dat_type.getBaseDataType().getPathName().lstrip("/")) + " " + dat_type.getDisplayName() + ";")
 
         if dat_type.description:
             typedef.write(" // " + dat_type.description)
@@ -217,7 +266,7 @@ for dat_type in dat_manager.getAllDataTypes():
         typedef.close()
 
     elif isinstance(dat_type, ghidra.program.database.data.EnumDB):
-        type_path = path.resolve("enums").resolve(parent_path)
+        type_path = path.resolve("types").resolve(parent_path)
         Files.createDirectories(type_path)
 
         enum = open(str(type_path.resolve(path_name.rpartition('/')[-1].lstrip("/") + ".h")), "w")
