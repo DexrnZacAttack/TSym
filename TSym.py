@@ -16,17 +16,17 @@ except:
     pass
 from ghidra.program.model.listing import FunctionManager, CodeUnit
 from ghidra.program.model.data import ParameterDefinition, DefaultDataType
+from ghidra.util.task import TaskMonitor # TODO
 from ghidra.program.database.function import FunctionManagerDB
 from ghidra.program.database.data import StructureDB, TypedefDB, PointerDB
 from ghidra.program.model.data import BuiltInDataType, PointerDataType
 from ghidra.program.model.symbol import Symbol, SymbolType
 from ghidra.util import Msg
 from java.nio.file import Path, Paths, Files
-from java.lang import String
 #endregion
 
 #region constants
-tsym_ver = "1.1.0"
+tsym_ver = "1.1.1"
 tsym_symbols_ver = 1
 tsym_comments_ver = 1
 tsym_labels_ver = 1
@@ -61,6 +61,7 @@ labels.write("# TSym-Labels " + str(tsym_labels_ver) + " | TSym " + tsym_ver + "
 fun_manager = currentProgram.getFunctionManager()
 dat_manager = currentProgram.getDataTypeManager()
 sym_table = currentProgram.getSymbolTable()
+all_syms = sym_table.getAllSymbols(True)
 #endregion
 
 #region functions
@@ -79,6 +80,11 @@ url_arr = {
 }
 
 
+def remove_from_array(string, remove):
+    for rep in remove:
+        string = string.replace(rep, "")
+    return string
+
 # janky url encode since can't find the python3 one from ghidra
 # doesn't include / so that paths still work
 def url_encode(string):
@@ -88,6 +94,10 @@ def url_encode(string):
     This exists because whatever python version Ghidra uses doesn't have urllib.parse.
     """
     return ''.join(url_arr.get(char, char) for char in string)
+#endregion
+
+#region internal_names
+internal_names = ["TS_INHERIT", "TS_PUBLIC", "TS_PRIVATE", "TS_PROTECTED"]
 #endregion
 
 #region comments writer
@@ -163,6 +173,7 @@ for dat_type in dat_manager.getAllDataTypes():
     parent_path = path_name.rpartition('/')[0].lstrip("/")
     if isinstance(dat_type, ghidra.program.database.data.StructureDB) or isinstance(dat_type, ghidra.program.database.data.UnionDB):
         inherits = []
+        inherit_comments = []
 
         t_name = "struct"
         if isinstance(dat_type, ghidra.program.database.data.UnionDB):
@@ -177,8 +188,12 @@ for dat_type in dat_manager.getAllDataTypes():
 
         for component in dat_type.getComponents():  # type: ghidra.program.model.data.DataTypeComponent
             try:
-                if (component.getFieldName() == "inherit" or component.comment == "inherit") and t_name == "struct":
-                    inherits.append(os.path.basename(component.getDataType().getPathName().lstrip("/")))
+                if (component.getFieldName() == "inherit" or component.comment == "inherit" or str(component.comment).__contains__("TS_INHERIT")) and t_name == "struct":
+                    inherits.append("public " + os.path.basename(component.getDataType().getPathName().lstrip("/")))
+                    if component.comment is not None:
+                        inherit_comments.append(remove_from_array(str(component.comment), internal_names))
+                    else:
+                        inherit_comments.append(None)
 
                 # this assumes the user has an import path set at root dir (types)
                 dtype = component.getDataType()
@@ -201,7 +216,12 @@ for dat_type in dat_manager.getAllDataTypes():
         inherit = ""
         if inherits:
             inherit += " : "
-            inherit += ', '.join(inherits)
+            for i, i1 in enumerate(inherits):
+                if inherit_comments and inherit_comments[i]:
+                    inherit += " /* " + str(inherit_comments[i]).strip() + " */ "
+                inherit += i1
+                if i < len(inherits) - 1:
+                    inherit += ", "
 
         struct.write(t_name + " " + dat_type.getDisplayName() + inherit + " {")
 
@@ -212,13 +232,13 @@ for dat_type in dat_manager.getAllDataTypes():
                 if component.getFieldName():
                     st_name = component.getFieldName()
 
-                if (st_name == "inherit" or component.comment == "inherit") and t_name == "struct":
+                if (st_name == "inherit" or component.comment == "inherit" or str(component.comment).__contains__("TS_INHERIT")) and t_name == "struct":
                     continue
 
                 struct.write("\n    " + os.path.basename(component.getDataType().getPathName().lstrip("/")) + " " + st_name + ";")
 
                 if component.comment:
-                    struct.write(" // " + component.comment)
+                    struct.write(" // " + remove_from_array(component.comment, internal_names))
             except Exception as e:
                 struct.write("\n    // " + str(e))
             i += 1
